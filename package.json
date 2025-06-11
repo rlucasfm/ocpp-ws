@@ -1,0 +1,15 @@
+{
+  "name": "ocpp-ws",
+  "version": "1.0.0",
+  "description": "Testing OCPP connection",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ocpp-rpc": "^2.2.0",
+    "ws": "^8.18.2"
+  }
+}
