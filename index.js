@@ -77,18 +77,82 @@ server.on('client', async (client) => {
         };
     });
 
-    client.handle('StopTransaction', ({params}) => {
+    client.handle('StopTransaction', async ({params}) => {
         console.log(`StopTransaction de ${client.identity}:`, params);
-        // Se params.idTag existir, retorne idTagInfo
-        if (params.idTag) {
-            return {
-                idTagInfo: {
-                    status: "Accepted"
-                }
-            };
+        const { transactionId, timestamp, meterStop, idTag } = params;
+
+        // 1. Achar o start_request mais recente com o idTag.
+        const { data: startRequest, error: startRequestError } = await supabase
+            .from('start_requests')
+            .select('*')
+            .eq('id_tag', idTag)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (startRequestError || !startRequest) {
+            console.error(`StopTransaction: Não foi possível encontrar um start_request para o idTag ${idTag}.`, startRequestError);
+            return { idTagInfo: { status: "Accepted" } }; // Aceita para não bloquear a estação
         }
-        // Caso contrário, pode retornar um objeto vazio
-        return {};
+
+        // 2. Usar o session_id do start_request para achar a charging_session.
+        const { data: chargingSession, error: chargingSessionError } = await supabase
+            .from('charging_sessions')
+            .select('*')
+            .eq('id', startRequest.session_id)
+            .single();
+        
+        if (chargingSessionError || !chargingSession) {
+            console.error(`StopTransaction: Sessão de carregamento com id ${startRequest.session_id} não encontrada.`, chargingSessionError);
+            return { idTagInfo: { status: "Accepted" } };
+        }
+
+        // 3. Calcular dados de carga
+        let cargaTotalKwh = 0;
+        let cargaMediaKw = 0;
+        let custo_total = 0;
+
+        // A melhor abordagem é usar meterStart da sessão e meterStop da parada.
+        const meterStart = chargingSession.meter_start || 0;
+        if (meterStop > meterStart) {
+            const totalEnergyWh = meterStop - meterStart;
+            cargaTotalKwh = totalEnergyWh / 1000;
+        }
+
+        const startTime = new Date(chargingSession.created_at);
+        const stopTime = new Date(timestamp);
+        const durationMs = stopTime.getTime() - startTime.getTime();
+        
+        if (durationMs > 0 && cargaTotalKwh > 0) {
+            const durationHours = durationMs / (1000 * 60 * 60);
+            cargaMediaKw = cargaTotalKwh / durationHours;
+        }
+
+        custo_total = cargaTotalKwh * startRequest.preco_kwh;
+
+        // 4. Atualizar a sessão no banco
+        const { error: updateError } = await supabase
+            .from('charging_sessions')
+            .update({
+                status: 'finalizado',
+                carga_total_kwh: cargaTotalKwh,
+                carga_media_kw: cargaMediaKw.toFixed(2),
+                custos: custo_total,
+                total_pago: custo_total
+            })
+            .eq('id', chargingSession.id);
+
+        if (updateError) {
+            console.error(`StopTransaction: Erro ao finalizar a sessão ${chargingSession.id}.`, updateError);
+        } else {
+            console.log(`Sessão ${chargingSession.id} (Transaction ID: ${transactionId}) finalizada com sucesso.`);
+        }
+
+        return {
+            idTagInfo: {
+                status: "Accepted"
+            }
+        };
     });
 
     client.handle(({method, params}) => {
@@ -107,7 +171,7 @@ supabase
     'postgres_changes',
     { event: 'INSERT', schema: 'public', table: 'start_requests' },
     async (payload) => {
-      const { id_tag, charge_point_id, connector_id, id } = payload.new;
+      const { id_tag, charge_point_id, connector_id, id, session_id } = payload.new;
 
       const client = clientesOcpp[charge_point_id];
       if (!client) {
@@ -123,8 +187,16 @@ supabase
         });
 
         console.log(`Comando enviado a ${charge_point_id}, resposta:`, response);
-
         await supabase.from('start_requests').update({ status: 'processado' }).eq('id', id);
+        
+        console.log(`Atualizando status para processado e em_andamento session_id: ${session_id}`);
+        const { data, error } = await supabase.from('charging_sessions').update({ status: 'em_andamento' }).eq('id', session_id);
+
+        if (error) {
+            console.error('Erro ao atualizar charging_sessions:', error);
+        } else {
+            console.log('Sessão de carregamento atualizada com sucesso:', data);
+        }
       } catch (error) {
         console.error(`Erro ao enviar para ${charge_point_id}:`, error);
         await supabase.from('start_requests').update({ status: 'erro' }).eq('id', id);
