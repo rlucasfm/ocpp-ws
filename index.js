@@ -148,6 +148,20 @@ server.on('client', async (client) => {
             console.log(`Sessão ${chargingSession.id} (Transaction ID: ${transactionId}) finalizada com sucesso.`);
         }
 
+        // 5. Capturar pagamento na Pagar.me, se houver charge_provider_id
+        if (chargingSession.charge_provider_id) {
+            try {
+                const { PagarmeService } = require('./PagarmeService');
+                const pagarme = new PagarmeService();
+                const captura = await pagarme.capturarCobranca(chargingSession.charge_provider_id, custo_total);
+                console.log('Cobrança capturada com sucesso na Pagar.me:', captura);
+            } catch (err) {
+                console.error('Erro ao capturar cobrança na Pagar.me:', err);
+            }
+        } else {
+            console.warn('Nenhum charge_provider_id encontrado para esta sessão, não foi possível capturar cobrança.');
+        }
+
         return {
             idTagInfo: {
                 status: "Accepted"

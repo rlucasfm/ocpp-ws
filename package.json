@@ -10,6 +10,7 @@
   "license": "ISC",
   "dependencies": {
     "@supabase/supabase-js": "^2.50.0",
+    "node-fetch": "^2.7.0",
     "ocpp-rpc": "^2.2.0",
     "ws": "^8.18.2"
   }
